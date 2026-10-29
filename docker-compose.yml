@@ -1,0 +1,54 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: chess-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: chess
+      MYSQL_DATABASE: chess
+      MYSQL_USER: chess
+      MYSQL_PASSWORD: chess
+    ports:
+      - "3307:3306"
+    volumes:
+      - chess-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uchess", "-pchess"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    container_name: chess-app
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: chess
+      DB_PASSWORD: chess
+      DB_NAME: chess
+    ports:
+      - "3000:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    container_name: chess-phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: chess
+    ports:
+      - "8080:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  chess-mysql-data:
