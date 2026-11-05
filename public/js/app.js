@@ -3,6 +3,7 @@ import * as events from './events.js';
 import { el, toast } from './ui.js';
 import { renderHome } from './home.js';
 import { renderGame } from './game.js';
+import { renderAdmin } from './admin.js';
 
 const root = document.getElementById('app');
 const statusDot = document.getElementById('conn');
@@ -17,36 +18,41 @@ function navigate(path) {
 }
 
 function renderLogin() {
-  const input = el('input', { class: 'input', placeholder: 'Your nickname', maxlength: '32', autofocus: true });
-  const submit = async () => {
+  const email = el('input', { class: 'input', type: 'email', name: 'email', placeholder: 'Email', autocomplete: 'username', required: true });
+  const password = el('input', { class: 'input', type: 'password', name: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
+  const button = el('button', { class: 'btn primary wide', type: 'submit', text: 'Sign in' });
+  const form = el('form', { class: 'login-card' }, [
+    el('div', { class: 'logo', text: '♞' }),
+    el('h1', { text: 'chess online' }),
+    el('p', { class: 'muted', text: 'Sign in with the email and password you were given.' }),
+    email,
+    password,
+    button,
+  ]);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    button.disabled = true;
     try {
-      const { user } = await api.login(input.value);
+      const { user } = await api.login(email.value, password.value);
       me = user;
       events.connect();
       paintHeader();
       navigate('/');
     } catch (err) {
       toast(err.message, 'error');
+      password.select();
+    } finally {
+      button.disabled = false;
     }
-  };
-  root.replaceChildren(
-    el('div', { class: 'login' }, [
-      el('div', { class: 'login-card' }, [
-        el('div', { class: 'logo', text: '♞' }),
-        el('h1', { text: 'chess online' }),
-        el('p', { class: 'muted', text: 'Pick a nickname to play. New nicknames create a player.' }),
-        input,
-        el('button', { class: 'btn primary wide', text: 'Enter', onclick: submit }),
-      ]),
-    ])
-  );
-  input.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-  input.focus();
+  });
+  root.replaceChildren(el('div', { class: 'login' }, [form]));
+  email.focus();
 }
 
 function paintHeader() {
   whoami.replaceChildren();
   if (!me) return;
+  if (me.isAdmin) whoami.append(el('a', { class: 'btn small ghost', href: '#/admin', text: 'Admin' }));
   whoami.append(
     el('span', { class: 'me' }, [el('span', { class: 'me-avatar', text: me.avatar }), me.nickname]),
     el('button', {
@@ -73,6 +79,11 @@ function route() {
     return;
   }
   const path = location.hash.slice(1) || '/';
+  if (path === '/admin') {
+    if (me.isAdmin) teardown = renderAdmin(root, { navigate });
+    else navigate('/');
+    return;
+  }
   const gameMatch = path.match(/^\/game\/(\d+)$/);
   if (gameMatch) {
     teardown = renderGame(root, { gameId: Number(gameMatch[1]), navigate });

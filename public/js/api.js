@@ -23,7 +23,7 @@ async function request(method, url, body) {
 
 export const api = {
   me: () => request('GET', '/api/me'),
-  login: (nickname) => request('POST', '/api/login', { nickname }),
+  login: (email, password) => request('POST', '/api/login', { email, password }),
   logout: () => request('POST', '/api/logout'),
 
   users: () => request('GET', '/api/users'),
@@ -45,4 +45,7 @@ export const api = {
   draw: (id, action) => request('POST', `/api/games/${id}/draw`, { action }),
   chat: (id) => request('GET', `/api/games/${id}/chat`),
   sendChat: (id, body) => request('POST', `/api/games/${id}/chat`, { body }),
+
+  adminUsers: () => request('GET', '/api/admin/users'),
+  adminCreateUser: (fields) => request('POST', '/api/admin/users', fields),
 };

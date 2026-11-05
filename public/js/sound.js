@@ -1,14 +1,49 @@
-// Move and capture sounds, synthesised with the Web Audio API (no audio
-// files). A wooden "tock" is a short burst of filtered noise for the click
-// plus a quickly decaying low sine for the body of the piece.
+// Move and capture sounds, played from the files in /sounds through the Web
+// Audio API: decoded once, so a sound starts the moment a move lands and
+// overlapping moves can both play.
+
+const FILES = {
+  move: '/sounds/move-self.mp3',
+  capture: '/sounds/capture.mp3',
+};
 
 let ctx = null;
+const buffers = {};
+
+// The files are downloaded straight away, but decoded only once the audio
+// context exists: browsers warn about a context created before the player
+// has touched the page.
+const downloads = Object.fromEntries(
+  Object.entries(FILES).map(([name, url]) => [
+    name,
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        return res.arrayBuffer();
+      })
+      .catch((err) => console.warn(`Could not load the ${name} sound:`, err.message)),
+  ])
+);
+
+function decodeAll(ac) {
+  for (const [name, download] of Object.entries(downloads)) {
+    download.then(async (bytes) => {
+      if (!bytes) return;
+      try {
+        buffers[name] = await ac.decodeAudioData(bytes);
+      } catch (err) {
+        console.warn(`Could not decode the ${name} sound:`, err.message);
+      }
+    });
+  }
+}
 
 function audio() {
   if (!ctx) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return null;
     ctx = new Ctx();
+    decodeAll(ctx);
   }
   if (ctx.state === 'suspended') ctx.resume();
   return ctx;
@@ -21,43 +56,20 @@ for (const type of ['pointerdown', 'keydown']) {
   window.addEventListener(type, () => audio(), { once: true, capture: true });
 }
 
-function knock(ac, at, { freq, body, gain, length }) {
-  const noise = ac.createBuffer(1, Math.ceil(ac.sampleRate * length), ac.sampleRate);
-  const data = noise.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length) ** 3;
-  const click = ac.createBufferSource();
-  click.buffer = noise;
-  const band = ac.createBiquadFilter();
-  band.type = 'bandpass';
-  band.frequency.value = freq;
-  band.Q.value = 1.2;
-  const clickGain = ac.createGain();
-  clickGain.gain.value = gain;
-  click.connect(band).connect(clickGain).connect(ac.destination);
-  click.start(at);
-
-  const thump = ac.createOscillator();
-  thump.type = 'sine';
-  thump.frequency.setValueAtTime(body, at);
-  thump.frequency.exponentialRampToValueAtTime(body * 0.6, at + length * 2);
-  const thumpGain = ac.createGain();
-  thumpGain.gain.setValueAtTime(gain * 0.8, at);
-  thumpGain.gain.exponentialRampToValueAtTime(0.001, at + length * 2);
-  thump.connect(thumpGain).connect(ac.destination);
-  thump.start(at);
-  thump.stop(at + length * 2 + 0.02);
+function play(name) {
+  const ac = audio();
+  const buffer = buffers[name];
+  if (!ac || ac.state !== 'running' || !buffer) return;
+  const source = ac.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ac.destination);
+  source.start();
 }
 
 export function playMove() {
-  const ac = audio();
-  if (!ac || ac.state !== 'running') return;
-  knock(ac, ac.currentTime, { freq: 1900, body: 180, gain: 0.5, length: 0.05 });
+  play('move');
 }
 
 export function playCapture() {
-  const ac = audio();
-  if (!ac || ac.state !== 'running') return;
-  const now = ac.currentTime;
-  knock(ac, now, { freq: 1300, body: 140, gain: 0.8, length: 0.07 });
-  knock(ac, now + 0.07, { freq: 2600, body: 260, gain: 0.35, length: 0.04 });
+  play('capture');
 }

@@ -7,8 +7,9 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "db": "docker compose up -d",
-    "seed": "node scripts/seed.js",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js",
+    "reset-db": "node scripts/reset-db.js",
+    "reset-password": "node scripts/reset-password.js"
   },
   "keywords": [],
   "author": "",

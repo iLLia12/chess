@@ -1,14 +1,31 @@
 -- chess online schema
 
+-- Accounts are created by an admin; the password is generated, shown once,
+-- and only its scrypt hash is kept.
 CREATE TABLE IF NOT EXISTS users (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  email         VARCHAR(254) NOT NULL,
   nickname      VARCHAR(32)  NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  is_admin      TINYINT(1)   NOT NULL DEFAULT 0,
   avatar        VARCHAR(16)  NOT NULL DEFAULT '♟',
-  country       CHAR(2)      NOT NULL DEFAULT 'UA',
+  country       CHAR(2)      DEFAULT NULL,
   joined_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_seen_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  UNIQUE KEY uq_users_email (email),
   UNIQUE KEY uq_users_nickname (nickname)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- The cookie carries a random token; only its SHA-256 is stored here.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash  CHAR(64)     NOT NULL,
+  user_id     INT UNSIGNED NOT NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at  DATETIME     NOT NULL,
+  PRIMARY KEY (token_hash),
+  KEY idx_sessions_user (user_id),
+  CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS friendships (

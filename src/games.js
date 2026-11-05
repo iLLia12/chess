@@ -22,9 +22,9 @@ function publicUser(row, prefix) {
 const GAME_SELECT = `
   SELECT g.*,
          w.id AS w_id, w.nickname AS w_nickname, w.avatar AS w_avatar, w.country AS w_country,
-         w.joined_at AS w_joined_at, w.last_seen_at AS w_last_seen_at,
+         w.joined_at AS w_joined_at, w.last_seen_at AS w_last_seen_at, w.is_admin AS w_is_admin,
          b.id AS b_id, b.nickname AS b_nickname, b.avatar AS b_avatar, b.country AS b_country,
-         b.joined_at AS b_joined_at, b.last_seen_at AS b_last_seen_at
+         b.joined_at AS b_joined_at, b.last_seen_at AS b_last_seen_at, b.is_admin AS b_is_admin
     FROM games g
     JOIN users w ON w.id = g.white_id
     JOIN users b ON b.id = g.black_id
@@ -86,6 +86,9 @@ function serializeGame(row, moves, viewerId) {
   const turn = chess.turn();
   const captured = capturedPieces(moves);
   const last = moves.length ? moves[moves.length - 1] : null;
+  // An admin playing in a game can move for either side.
+  const viewerIsAdmin = Boolean(Number(yourColor === 'w' ? row.w_is_admin : yourColor === 'b' ? row.b_is_admin : 0));
+  const canMove = live && yourColor !== null && (yourColor === turn || viewerIsAdmin);
 
   return {
     id: Number(row.id),
@@ -104,6 +107,8 @@ function serializeGame(row, moves, viewerId) {
     black,
     yourColor,
     yourTurn: live && yourColor !== null && yourColor === turn,
+    canMove,
+    movesBothSides: viewerIsAdmin,
     moves: moves.map((m) => ({
       ply: m.ply,
       color: m.color,
@@ -120,7 +125,7 @@ function serializeGame(row, moves, viewerId) {
       byBlack: captured.byBlack,
       advantage: materialScore(captured.byWhite) - materialScore(captured.byBlack),
     },
-    legalMoves: live && yourColor === turn ? legalMovesBySquare(chess) : {},
+    legalMoves: canMove ? legalMovesBySquare(chess) : {},
   };
 }
 
@@ -182,7 +187,9 @@ class GameError extends Error {
   }
 }
 
-async function makeMove(gameId, userId, { from, to, promotion }) {
+// asAdmin: the mover is an admin, who may move for either side of a game they
+// play in. The move is recorded for the side whose turn it is.
+async function makeMove(gameId, userId, { from, to, promotion }, { asAdmin = false } = {}) {
   await db.transaction(async (conn) => {
     const [[row]] = await conn.query('SELECT * FROM games WHERE id = ? FOR UPDATE', [gameId]);
     if (!row) throw new GameError('Game not found', 404);
@@ -197,7 +204,7 @@ async function makeMove(gameId, userId, { from, to, promotion }) {
       [gameId]
     );
     const chess = replay(moveRows);
-    const color = userId === white ? 'w' : 'b';
+    const color = asAdmin ? chess.turn() : userId === white ? 'w' : 'b';
     if (chess.turn() !== color) throw new GameError('Not your turn', 409);
 
     let move;

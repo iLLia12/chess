@@ -62,9 +62,9 @@ function sseListen(cookie, onEvent) {
   });
 }
 
-const login = async (nickname) => {
-  const res = await request('POST', '/api/login', { body: { nickname } });
-  assert.strictEqual(res.status, 200, `login ${nickname}: ${JSON.stringify(res.body)}`);
+const login = async (email, password) => {
+  const res = await request('POST', '/api/login', { body: { email, password } });
+  assert.strictEqual(res.status, 200, `login ${email}: ${JSON.stringify(res.body)}`);
   const cookie = res.headers['set-cookie'][0].split(';')[0];
   return { user: res.body.user, cookie };
 };
@@ -92,10 +92,87 @@ function check(label, fn) {
     s.listen(PORT, () => resolve(s));
   });
 
+  // Everything this run creates is deleted again at the end.
+  const { createUser } = require('../src/users');
   const stamp = Date.now().toString().slice(-6);
-  const alice = await login(`test-a-${stamp}`);
-  const bob = await login(`test-b-${stamp}`);
+  const testIds = [];
+  const adminAccount = await createUser({ email: `test-admin-${stamp}@example.test`, nickname: `test-admin-${stamp}` }, { isAdmin: true });
+  testIds.push(Number(adminAccount.user.id));
+  const admin = await login(adminAccount.user.email, adminAccount.password);
+
+  const wrong = await request('POST', '/api/login', { body: { email: adminAccount.user.email, password: 'not-it' } });
+  check('a wrong password is refused', () => assert.strictEqual(wrong.status, 401));
+  const unknown = await request('POST', '/api/login', { body: { email: `nobody-${stamp}@example.test`, password: 'x' } });
+  check('an unknown email is refused with the same message', () => {
+    assert.strictEqual(unknown.status, 401);
+    assert.strictEqual(unknown.body.error, wrong.body.error);
+  });
+  const forged = await request('GET', '/api/me', { cookie: `uid=${adminAccount.user.id}` });
+  check('a cookie holding a bare user id does not sign anyone in', () => assert.strictEqual(forged.body.user, null));
+  check('the admin is told they are an admin', () => assert.strictEqual(admin.user.isAdmin, true));
+
+  const makePlayer = async (name, country) => {
+    const res = await request('POST', '/api/admin/users', {
+      body: { email: `test-${name}-${stamp}@Example.test`, nickname: `test-${name}-${stamp}`, country },
+      cookie: admin.cookie,
+    });
+    assert.strictEqual(res.status, 201, JSON.stringify(res.body));
+    testIds.push(res.body.user.id);
+    return res.body;
+  };
+  const aliceAccount = await makePlayer('a', 'pl');
+  const bobAccount = await makePlayer('b');
+  check('the admin gets a generated password for a new account', () =>
+    assert.ok(typeof aliceAccount.password === 'string' && aliceAccount.password.length >= 12));
+  check('emails are stored lower-case and country is optional', () => {
+    assert.strictEqual(aliceAccount.user.email, `test-a-${stamp}@example.test`);
+    assert.strictEqual(aliceAccount.user.country, 'PL');
+    assert.strictEqual(bobAccount.user.country, null);
+  });
+  const dupe = await request('POST', '/api/admin/users', {
+    body: { email: aliceAccount.user.email, nickname: `other-${stamp}` },
+    cookie: admin.cookie,
+  });
+  check('an email can only have one account', () => assert.strictEqual(dupe.status, 400));
+
+  const alice = await login(aliceAccount.user.email, aliceAccount.password);
+  const bob = await login(bobAccount.user.email, bobAccount.password);
   console.log('two players signed in');
+
+  const listed = await request('GET', '/api/admin/users', { cookie: admin.cookie });
+  check('the admin user list includes new accounts with their email', () =>
+    assert.ok(listed.body.users.some((u) => u.id === alice.user.id && u.email === aliceAccount.user.email)));
+  check('the user list never contains passwords', () =>
+    assert.ok(!JSON.stringify(listed.body).includes(aliceAccount.password) && !/password/i.test(JSON.stringify(listed.body))));
+  const notAdmin = await request('GET', '/api/admin/users', { cookie: alice.cookie });
+  check('players cannot open the admin API', () => assert.strictEqual(notAdmin.status, 403));
+
+  // An admin in a game moves for whichever side is to move.
+  const adminGameRes = await request('POST', '/api/games', { body: { opponentId: alice.user.id }, cookie: admin.cookie });
+  const adminGameId = adminGameRes.body.gameId;
+  const adminView = (await request('GET', `/api/games/${adminGameId}`, { cookie: admin.cookie })).body.game;
+  const aliceView = (await request('GET', `/api/games/${adminGameId}`, { cookie: alice.cookie })).body.game;
+  check('the admin can move on either side\'s turn, a player only on their own', () => {
+    assert.strictEqual(adminView.canMove, true);
+    assert.strictEqual(adminView.movesBothSides, true);
+    assert.deepStrictEqual(adminView.legalMoves.e2, ['e3', 'e4']);
+    assert.strictEqual(aliceView.canMove, aliceView.yourColor === 'w');
+  });
+  const adminMoves = [['e2', 'e4'], ['e7', 'e5'], ['g1', 'f3']];
+  const statuses = [];
+  for (const [from, to] of adminMoves) {
+    statuses.push((await request('POST', `/api/games/${adminGameId}/move`, { body: { from, to }, cookie: admin.cookie })).status);
+  }
+  const afterAdmin = (await request('GET', `/api/games/${adminGameId}`, { cookie: alice.cookie })).body.game;
+  check('the admin played moves for both white and black', () => {
+    assert.deepStrictEqual(statuses, [200, 200, 200]);
+    assert.deepStrictEqual(afterAdmin.moves.map((m) => [m.san, m.color]), [['e4', 'w'], ['e5', 'b'], ['Nf3', 'w']]);
+  });
+  // Black to move now. Alice may move only if she is black.
+  const aliceTry = await request('POST', `/api/games/${adminGameId}/move`, { body: { from: 'b8', to: 'c6' }, cookie: alice.cookie });
+  check('a player still moves only on their own turn', () =>
+    assert.strictEqual(aliceTry.status, afterAdmin.yourColor === 'b' ? 200 : 409));
+  await request('POST', `/api/games/${adminGameId}/resign`, { cookie: admin.cookie });
 
   const seen = [];
   const aliceStream = await sseListen(alice.cookie, (type, data) => seen.push([type, data]));
@@ -237,7 +314,17 @@ function check(label, fn) {
   check('SSE pushed the chat message to the opponent', () =>
     assert.ok(seen.some(([t, d]) => t === 'chat' && d && d.id === sent.body.message.id)));
 
+  const loggedOut = await request('POST', '/api/logout', { cookie: bob.cookie });
+  const afterLogout = await request('GET', '/api/me', { cookie: bob.cookie });
+  check('signing out ends the session on the server', () => {
+    assert.strictEqual(loggedOut.status, 200);
+    assert.strictEqual(afterLogout.body.user, null);
+  });
+
   aliceStream.stop();
+  // Remove the test accounts and their games so they do not pile up.
+  await db.exec('DELETE FROM games WHERE white_id IN (?) OR black_id IN (?)', [testIds, testIds]);
+  await db.exec('DELETE FROM users WHERE id IN (?)', [testIds]);
   server.close();
   await db.pool.end();
   console.log(`\n${passed} checks passed${process.exitCode ? ' (with failures above)' : ''}`);

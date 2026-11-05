@@ -10,23 +10,34 @@ browser — no build step.
 ```bash
 npm install
 npm run db        # starts MySQL 8 in Docker on port 3307
-npm run seed      # optional: a few players and two example games
 npm start         # http://localhost:3000
 ```
 
 Or run everything (app + MySQL) in Docker:
 
 ```bash
-docker compose up -d --build                  # http://localhost:3000
-docker compose exec app node scripts/seed.js  # optional seed data
+docker compose up -d --build    # http://localhost:3000
+docker compose logs app         # the admin password is printed here on first boot
 ```
 
 phpMyAdmin comes up with it at http://localhost:8080, already signed in to
 the `chess` database as root (local use only).
 
-Sign in with any nickname — an unknown nickname creates the player. To play
-against yourself, open a second browser (or a private window) and sign in under
-a different nickname; both windows update live.
+## Accounts
+
+There is no public sign-up. On the first boot the server creates one admin
+account, `goncharovphp@gmail.com` (override with `ADMIN_EMAIL`), and prints its
+generated password to the terminal **once** — only a scrypt hash is stored, so
+copy it then. The admin opens **Admin** in the top bar to create players
+(email, nickname, optional two-letter country); each new player's password is
+generated and shown to the admin once, to pass on.
+
+Lost a password? `npm run reset-password -- someone@example.com` prints a new
+one and signs that account out everywhere. `npm run reset-db -- --yes` deletes
+every player and game; the admin is created again on the next boot.
+
+To play against yourself, create a second player, then sign in as them in a
+second browser (or a private window); both windows update live.
 
 Already have MySQL? Skip `npm run db` and point `.env` at it. The schema is
 applied automatically on boot (`db/schema.sql`, all `CREATE TABLE IF NOT EXISTS`).
@@ -83,13 +94,16 @@ src/
   games.js      all chess/game logic and the JSON shapes the client gets
   chat.js       per-game chat messages
   challenges.js challenge, accept, decline / cancel
-  auth.js       cookie session (nickname only - see below)
-  routes/       auth, users, games, events
+  auth.js       sessions: random token in an httpOnly cookie, its hash in MySQL
+  users.js      account creation, default admin, password reset
+  passwords.js  generated passwords, scrypt hashing
+  routes/       auth, users, games, events, admin
 public/
   index.html    shell
-  js/           app (router), home, game, board, tiles, sound, api, events, ui
+  js/           app (router), home, game, admin, board, tiles, sound, api, events, ui
   css/styles.css
-db/schema.sql   users, friendships, games, moves, chat_messages, challenges
+db/schema.sql   users, sessions, friendships, games, moves, chat_messages, challenges
+scripts/        reset-db, reset-password
 test/smoke.js   end-to-end test
 ```
 
@@ -104,7 +118,7 @@ table.
 ## API
 
 ```
-POST   /api/login            {nickname}          sign in / create player
+POST   /api/login            {email,password}    sign in
 POST   /api/logout
 GET    /api/me
 GET    /api/users                                other players, online first
@@ -126,12 +140,15 @@ POST   /api/challenges      {userId}             challenge a player
 POST   /api/challenges/:id/accept                accept -> starts the game
 DELETE /api/challenges/:id                       decline (challenged) or cancel (challenger)
 GET    /api/events                               SSE stream
+GET    /api/admin/users                          all accounts (admin only)
+POST   /api/admin/users     {email,nickname,country?}  create; returns the password once
 ```
 
 ## Not done yet
 
-* **Auth is a nickname in a cookie** — fine for local play, not for the
-  internet. Add a password or OAuth before exposing this.
+* Sign-in has no rate limiting, and players cannot change their own
+  password yet. Put it behind HTTPS (`NODE_ENV=production` marks the cookie
+  `Secure`) before exposing it.
 * No clocks, ratings or takebacks. One active game per pair of players; New
   game starts one immediately, a challenge from the Friends popup waits for
   the other player to accept.

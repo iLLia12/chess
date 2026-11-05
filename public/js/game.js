@@ -1,18 +1,22 @@
 import { api } from './api.js';
 import * as events from './events.js';
 import { el, clear, flag, ago, toast, confirmDialog, GLYPH } from './ui.js';
-import { renderBoard, parseFen, findKing } from './board.js';
+import { renderBoard, isDragging, parseFen, previewMove, findKing } from './board.js';
 import { gameTile, challengeTile } from './tiles.js';
 import { playMove, playCapture } from './sound.js';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const EMPTY_FEN = '8/8/8/8/8/8/8/8 w - - 0 1';
 
 export function renderGame(host, { gameId, navigate }) {
   let state = null;
   let viewIndex = -1; // -1 = starting position, otherwise index into state.moves
-  let selected = null;
   let pendingPromotion = null;
+  // A dropped move waiting for the server: { from, to, fen }. The board shows
+  // it straight away instead of snapping the piece back until the reply.
+  let pendingMove = null;
   let busy = false;
+  let ownPly = -1; // ply of the last move made from this page
 
   const topHost = el('div', { class: 'player-bar' });
   const boardHost = el('div', { class: 'board-host' });
@@ -60,9 +64,43 @@ export function renderGame(host, { gameId, navigate }) {
     ])
   );
 
+  // Placeholders until the game arrives: shimmering player bars, an empty
+  // board with a spinner, a spinner in the chat and a few skeleton tiles.
+  // paint(), renderChat() and loadGames() replace each one when data lands.
+  function renderSkeleton() {
+    const skeletonBar = () => [
+      el('div', { class: 'player-id' }, [
+        el('span', { class: 'avatar skel' }),
+        el('div', { class: 'player-text skel-lines' }, [el('span', { class: 'skel skel-line' }), el('span', { class: 'skel skel-line short' })]),
+      ]),
+    ];
+    topHost.replaceChildren(...skeletonBar());
+    bottomHost.replaceChildren(...skeletonBar());
+    renderBoard(boardHost, { fen: EMPTY_FEN });
+    boardHost.append(el('div', { class: 'board-loading' }, [el('span', { class: 'spinner', role: 'status', 'aria-label': 'Loading game' })]));
+    chatList.replaceChildren(el('div', { class: 'chat-empty' }, [el('span', { class: 'spinner small' })]));
+    gamesList.replaceChildren(
+      ...[0, 1, 2].map(() =>
+        el('div', { class: 'tile skel-tile' }, [
+          el('div', { class: 'tile-head' }, [
+            el('span', { class: 'skel skel-dot' }),
+            el('div', { class: 'skel-lines' }, [el('span', { class: 'skel skel-line' }), el('span', { class: 'skel skel-line short' })]),
+          ]),
+          el('div', { class: 'skel skel-board' }),
+        ])
+      )
+    );
+  }
+
   const isLive = () => !!state && viewIndex === state.moves.length - 1;
-  const viewFen = () => (viewIndex < 0 ? START_FEN : state.moves[viewIndex].fen);
-  const viewLastMove = () => (viewIndex < 0 ? null : state.moves[viewIndex]);
+  const viewFen = () => {
+    if (pendingMove && isLive()) return pendingMove.fen;
+    return viewIndex < 0 ? START_FEN : state.moves[viewIndex].fen;
+  };
+  const viewLastMove = () => {
+    if (pendingMove && isLive()) return pendingMove;
+    return viewIndex < 0 ? null : state.moves[viewIndex];
+  };
 
   function capturedRow(pieces, advantage) {
     const node = el('div', { class: 'captured' });
@@ -170,7 +208,6 @@ export function renderGame(host, { gameId, navigate }) {
           disabled: atStart,
           onclick: () => {
             viewIndex -= 1;
-            selected = null;
             paint();
           },
         }),
@@ -180,7 +217,6 @@ export function renderGame(host, { gameId, navigate }) {
           disabled: atEnd,
           onclick: () => {
             viewIndex += 1;
-            selected = null;
             paint();
           },
         }),
@@ -195,20 +231,22 @@ export function renderGame(host, { gameId, navigate }) {
     const choose = (piece) => {
       const { from, to } = pendingPromotion;
       pendingPromotion = null;
+      pendingMove = { from, to, fen: previewMove(state.fen, from, to, piece) };
+      paint();
       act(() => api.move(gameId, { from, to, promotion: piece }));
     };
     boardHost.append(
       el('div', { class: 'promo' }, [
         el('span', { class: 'promo-label', text: 'Promote to' }),
         ...['q', 'r', 'b', 'n'].map((piece) =>
-          el('button', { class: `promo-btn ${state.yourColor}`, text: GLYPH[piece], onclick: () => choose(piece) })
+          el('button', { class: `promo-btn ${state.turn}`, text: GLYPH[piece], onclick: () => choose(piece) })
         ),
         el('button', {
           class: 'promo-cancel',
           text: '✕',
           onclick: () => {
             pendingPromotion = null;
-            selected = null;
+            pendingMove = null;
             paint();
           },
         }),
@@ -216,38 +254,26 @@ export function renderGame(host, { gameId, navigate }) {
     );
   }
 
-  function onSquare(square) {
-    if (busy || !isLive() || !state.yourTurn || state.status !== 'active') return;
-    const legal = state.legalMoves || {};
-    if (selected && (legal[selected] || []).includes(square)) {
-      const board = parseFen(state.fen);
-      const piece = board[selected];
-      const lastRank = state.yourColor === 'w' ? '8' : '1';
-      if (piece && piece.type === 'p' && square[1] === lastRank) {
-        pendingPromotion = { from: selected, to: square };
-        paint();
-        return;
-      }
-      const from = selected;
-      selected = null;
-      act(() => api.move(gameId, { from, to: square }));
-      return;
-    }
-    selected = legal[square] ? square : null;
-    paint();
-  }
-
-  // A dropped piece goes through the same path as click-from, click-to, so
-  // promotion and illegal targets are handled in one place.
+  // A piece let go on one of its legal squares makes the move; anywhere else
+  // it goes back. A pawn reaching the last rank asks what to promote to first.
   function onDrop(from, to) {
     const legal = (state.legalMoves || {})[from] || [];
-    if (!to || !legal.includes(to)) {
-      selected = null;
+    if (busy || !to || !legal.includes(to) || !isLive() || !state.canMove || state.status !== 'active') {
       paint();
       return;
     }
-    selected = from;
-    onSquare(to);
+    // Show the piece where it was dropped right away (a promoting pawn waits
+    // on its square while the piece to promote to is picked).
+    pendingMove = { from, to, fen: previewMove(state.fen, from, to) };
+    const piece = parseFen(state.fen)[from];
+    const lastRank = state.turn === 'w' ? '8' : '1';
+    if (piece && piece.type === 'p' && to[1] === lastRank) {
+      pendingPromotion = { from, to };
+      paint();
+      return;
+    }
+    paint();
+    act(() => api.move(gameId, { from, to }));
   }
 
   async function act(fn) {
@@ -256,8 +282,15 @@ export function renderGame(host, { gameId, navigate }) {
     renderActionBar();
     try {
       const { game } = await fn();
+      ownPly = game.ply;
+      pendingMove = null;
       apply(game, true);
     } catch (err) {
+      // Rejected: put the board back to the real position.
+      if (pendingMove) {
+        pendingMove = null;
+        paint();
+      }
       toast(err.message, 'error');
       await load();
     } finally {
@@ -275,18 +308,17 @@ export function renderGame(host, { gameId, navigate }) {
     playerBar(bottomHost, me, state.yourColor, 'bottom');
     renderBanner();
 
+    // Mid-drag the board is left alone; the drop repaints it.
+    if (isDragging(boardHost)) return;
     const live = isLive();
-    const interactive = live && state.yourTurn && state.status === 'active' && !pendingPromotion;
+    const interactive = live && state.canMove && state.status === 'active' && !pendingPromotion && !pendingMove;
     renderBoard(boardHost, {
       fen: viewFen(),
       orientation: state.yourColor,
       lastMove: viewLastMove(),
-      selected,
-      targets: selected ? state.legalMoves[selected] || [] : [],
       checkSquare: live && state.inCheck ? findKing(state.fen, state.turn) : null,
       interactive,
       legalMoves: interactive ? state.legalMoves || {} : {},
-      onSquare,
       onDrop,
     });
     if (!live) {
@@ -437,14 +469,18 @@ export function renderGame(host, { gameId, navigate }) {
     if (gamesList.scrollTop + gamesList.clientHeight >= gamesList.scrollHeight - 120) loadMoreFinished();
   });
 
+  renderSkeleton();
   load().then(loadChat);
   loadGames();
 
   const offGame = events.on('game', (game) => {
     if (!game || Number(game.id) !== Number(gameId)) return;
     const wasMyTurn = state && state.yourTurn;
+    // The push for a move made from this page (an admin may have just moved
+    // for the opponent) is not news; it can land before or after the reply.
+    const ownMove = busy || game.ply === ownPly;
     apply(game, false);
-    if (!wasMyTurn && game.yourTurn && game.status === 'active') toast('Your move', 'info');
+    if (!wasMyTurn && !ownMove && game.yourTurn && game.status === 'active') toast('Your move', 'info');
   });
   const offPresence = events.on('presence', () => {
     if (state) paint();
@@ -460,11 +496,9 @@ export function renderGame(host, { gameId, navigate }) {
     if (!state || e.target.closest('input, textarea')) return;
     if (e.key === 'ArrowLeft' && viewIndex > -1) {
       viewIndex -= 1;
-      selected = null;
       paint();
     } else if (e.key === 'ArrowRight' && viewIndex < state.moves.length - 1) {
       viewIndex += 1;
-      selected = null;
       paint();
     }
   };

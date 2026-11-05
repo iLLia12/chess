@@ -63,7 +63,7 @@ router.get('/:id', handle(async (req, res) => {
 router.post('/:id/move', handle(async (req, res) => {
   const { from, to, promotion } = req.body || {};
   if (!from || !to) throw new games.GameError('from and to are required', 400);
-  await games.makeMove(Number(req.params.id), req.user.id, { from, to, promotion });
+  await games.makeMove(Number(req.params.id), req.user.id, { from, to, promotion }, { asAdmin: req.user.isAdmin });
   res.json({ game: await games.getGame(Number(req.params.id), req.user.id) });
 }));
 

@@ -57,6 +57,32 @@ async function migrate() {
   for (const statement of statements) {
     await pool.query(statement);
   }
+  await upgradeUsers();
+}
+
+// Databases created before accounts had emails and passwords: add the
+// columns. Old rows cannot sign in, so this refuses to run while any exist
+// rather than guess credentials for them.
+async function upgradeUsers() {
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'email'`
+  );
+  if (cols.length) return;
+  const [[{ n }]] = await pool.query('SELECT COUNT(*) AS n FROM users');
+  if (n > 0) {
+    throw new Error(
+      `the users table has ${n} accounts from before email/password sign-in; remove them (npm run reset-db) and start again`
+    );
+  }
+  await pool.query(
+    `ALTER TABLE users
+       ADD COLUMN email VARCHAR(254) NOT NULL AFTER id,
+       ADD COLUMN password_hash VARCHAR(255) NOT NULL AFTER nickname,
+       ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0 AFTER password_hash,
+       MODIFY country CHAR(2) DEFAULT NULL,
+       ADD UNIQUE KEY uq_users_email (email)`
+  );
 }
 
 module.exports = { pool, query, one, exec, transaction, migrate };

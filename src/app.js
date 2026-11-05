@@ -18,6 +18,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/games', require('./routes/games'));
 app.use('/api/challenges', require('./routes/challenges'));
 app.use('/api/events', require('./routes/events'));
+app.use('/api/admin', require('./routes/admin'));
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 app.use(express.static(PUBLIC_DIR));

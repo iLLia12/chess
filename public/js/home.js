@@ -6,26 +6,26 @@ import { gameTile, challengeTile } from './tiles.js';
 const RECENT_PAGE = 5;
 
 export function renderHome(host, { user, navigate }) {
-  const profileHost = el('div');
+  const profileHost = el('aside', { class: 'sidebar' });
   const tilesHost = el('div', { class: 'tiles' });
+  // Hidden until we know there is at least one game or challenge.
+  const activePanel = el('section', { class: 'panel', hidden: true }, [
+    el('div', { class: 'panel-head' }, [el('h2', { text: 'Current games' })]),
+    tilesHost,
+  ]);
   const recentHost = el('div', { class: 'recent-list' });
   const recentFooter = el('div', { class: 'recent-footer' });
+  // Hidden until we know there is at least one finished game.
+  const recentPanel = el('section', { class: 'panel', hidden: true }, [
+    el('div', { class: 'panel-head' }, [el('h2', { text: 'Recent games' })]),
+    recentHost,
+    recentFooter,
+  ]);
 
   host.replaceChildren(
     el('div', { class: 'home' }, [
       profileHost,
-      el('section', { class: 'panel' }, [
-        el('div', { class: 'panel-head' }, [
-          el('h2', { text: 'Current games' }),
-          el('button', { class: 'btn primary', text: '+ New game', onclick: openNewGame }),
-        ]),
-        tilesHost,
-      ]),
-      el('section', { class: 'panel' }, [
-        el('div', { class: 'panel-head' }, [el('h2', { text: 'Recent games' })]),
-        recentHost,
-        recentFooter,
-      ]),
+      el('div', { class: 'home-main' }, [activePanel, recentPanel]),
     ])
   );
 
@@ -34,20 +34,23 @@ export function renderHome(host, { user, navigate }) {
 
   function renderProfile(me) {
     profileHost.replaceChildren(
-      el('section', { class: 'profile' }, [
-        el('div', { class: 'avatar-lg', text: me.avatar }),
-        el('div', { class: 'profile-main' }, [
-          el('div', { class: 'profile-top' }, [
-            el('h1', { class: 'nickname', text: me.nickname }),
-            el('span', { class: 'flag-lg', text: flag(me.country) }),
-          ]),
-          el('div', { class: 'profile-meta' }, [
-            el('span', { class: 'status online' }, [el('span', { class: 'dot online' }), 'online']),
-            el('span', { class: 'sep', text: '·' }),
-            el('span', { text: `joined ${fmtDate(me.joinedAt)}` }),
+      el('div', { class: 'sidebar-inner' }, [
+        el('h3', { class: 'sidebar-title', text: 'Profile' }),
+        el('div', { class: 'profile' }, [
+          el('div', { class: 'avatar-lg', text: me.avatar }),
+          el('div', { class: 'profile-main' }, [
+            el('div', { class: 'profile-top' }, [
+              el('h1', { class: 'nickname', text: me.nickname }),
+              el('span', { class: 'dot online', title: 'online', 'aria-label': 'online', role: 'img' }),
+              el('span', { class: 'flag-lg', text: flag(me.country) }),
+            ]),
+            el('div', { class: 'profile-meta' }, [el('span', { text: `joined ${fmtDate(me.joinedAt)}` })]),
           ]),
         ]),
-        el('button', { class: 'btn', text: '👥 Friends', onclick: openFriends }),
+        el('div', { class: 'sidebar-actions' }, [
+          el('button', { class: 'side-btn primary', text: '+', title: 'New game', 'aria-label': 'New game', onclick: openNewGame }),
+          el('button', { class: 'side-btn', text: '👥', title: 'Friends', 'aria-label': 'Friends', onclick: openFriends }),
+        ]),
       ])
     );
   }
@@ -55,17 +58,13 @@ export function renderHome(host, { user, navigate }) {
   async function loadActive() {
     try {
       const [{ games }, { challenges }] = await Promise.all([api.activeGames(), api.challenges()]);
-      if (!games.length && !challenges.length) {
-        tilesHost.replaceChildren(
-          el('p', { class: 'empty', text: 'No games in progress. Start one with the New game button.' })
-        );
-        return;
-      }
+      activePanel.hidden = !games.length && !challenges.length;
       tilesHost.replaceChildren(
         ...challenges.map((challenge) => challengeTile(challenge, navigate)),
         ...games.map((game) => gameTile(game, navigate))
       );
     } catch (err) {
+      activePanel.hidden = false;
       tilesHost.replaceChildren(el('p', { class: 'empty', text: err.message }));
     }
   }
@@ -92,11 +91,8 @@ export function renderHome(host, { user, navigate }) {
     try {
       const { games, hasMore, total } = await api.recentGames(recentOffset, RECENT_PAGE);
       recentOffset += games.length;
-      if (!total) {
-        recentHost.replaceChildren(el('p', { class: 'empty', text: 'No finished games yet.' }));
-      } else {
-        recentHost.append(...games.map(recentRow));
-      }
+      recentPanel.hidden = !total;
+      recentHost.append(...games.map(recentRow));
       clear(recentFooter);
       if (hasMore) {
         recentFooter.append(
@@ -106,6 +102,7 @@ export function renderHome(host, { user, navigate }) {
         recentFooter.append(el('span', { class: 'muted', text: `${total} game${total === 1 ? '' : 's'} total` }));
       }
     } catch (err) {
+      recentPanel.hidden = false;
       clear(recentFooter);
       recentFooter.append(el('span', { class: 'muted', text: err.message }));
     } finally {

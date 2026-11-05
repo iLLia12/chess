@@ -22,7 +22,7 @@ export function clear(node) {
 }
 
 export function flag(country) {
-  if (!country || country.length !== 2) return '🏳';
+  if (!country || country.length !== 2) return '';
   return String.fromCodePoint(...[...country.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }
 
